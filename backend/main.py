@@ -17,6 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .analyzer import analyze_domain
 from .domain_utils import validate_and_normalize_domain
 from .models import AnalyzeResponse
+from .rate_limit import AnalyzeRateLimitMiddleware
 
 app = FastAPI(
     title="Nersivo API",
