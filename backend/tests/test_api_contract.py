@@ -1,5 +1,5 @@
 """
-Tests de la API (FastAPI TestClient) y del contrato `webguard_mvp_v1.json`.
+Tests de la API (FastAPI TestClient) y del contrato `nersivo_mvp_v1.json`.
 
 Los checks de red se sustituyen por resultados fijos: no hay conexiones reales.
 """
@@ -17,7 +17,7 @@ from backend.models import AnalyzeResponse, Status
 from backend.tests.helpers import make_check
 
 SCHEMA_PATH = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "..", "webguard_mvp_v1.json")
+    os.path.join(os.path.dirname(__file__), "..", "..", "nersivo_mvp_v1.json")
 )
 CHECK_NAMES = ["web", "https", "dns", "mx", "spf", "dmarc"]
 
@@ -108,7 +108,7 @@ def test_contrato_define_los_seis_checks_y_los_enums(schema):
     assert defs["Severity"]["enum"] == [
         "none", "low", "medium", "high", "critical", "unknown",
     ]
-    # score: entero 0-100 O null, y nada más.
+    # score: entero 0-100 O null, y nada mÃ¡s.
     score = schema["properties"]["score"]
     assert score["anyOf"] == [
         {"type": "integer", "minimum": 0, "maximum": 100},
@@ -140,7 +140,7 @@ def test_contrato_rechaza_respuestas_invalidas(fake_checks, schema):
 
 
 def test_contrato_no_se_desincroniza_de_los_modelos_pydantic(schema):
-    """Si cambia models.py hay que regenerar/revisar webguard_mvp_v1.json."""
+    """Si cambia models.py hay que regenerar/revisar nersivo_mvp_v1.json."""
     generated = AnalyzeResponse.model_json_schema()
     assert set(schema["properties"]) == set(generated["properties"])
     assert set(schema["required"]) == set(generated["required"])
@@ -177,7 +177,7 @@ def test_api_2_ok_4_unknown_score_null_pero_global_status_ok(monkeypatch, schema
         monkeypatch.setattr(analyzer, f"check_{name}", lambda d, s=st: make_check(s))
     body = client.get("/analyze/example.com").json()
     assert body["score"] is None
-    assert body["global_status"] == "ok"  # semántica existente, sin cambios
+    assert body["global_status"] == "ok"  # semÃ¡ntica existente, sin cambios
     assert body["summary"]["passed"] == 2 and body["summary"]["unknown"] == 4
     jsonschema.validate(body, schema)
 

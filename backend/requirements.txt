@@ -1,6 +1,6 @@
-fastapi
-uvicorn[standard]
-pydantic
-httpx
-dnspython
-tldextract
+fastapi==0.141.1
+uvicorn[standard]==0.53.0
+pydantic==2.13.5
+httpx==0.28.1
+dnspython==2.8.0
+tldextract==5.3.2

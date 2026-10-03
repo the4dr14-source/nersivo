@@ -2,11 +2,11 @@
 Modelos Pydantic de Nersivo.
 
 Estos modelos reflejan EXACTAMENTE el contrato JSON congelado
-(`webguard_mvp_v1.json`) que define la estructura de la respuesta del
+(`nersivo_mvp_v1.json`) que define la estructura de la respuesta del
 endpoint `/analyze/{domain}`.
 
-Notas de diseño:
-- Los `details` de cada check son diccionarios dinámicos (`Dict[str, Any]`)
+Notas de diseÃ±o:
+- Los `details` de cada check son diccionarios dinÃ¡micos (`Dict[str, Any]`)
   porque cada tipo de check tiene una estructura de detalles diferente.
 - `technical_reason`, `recommendation` y `user_message` son opcionales
   (pueden ser `null` en el contrato).
@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 
 
 class Status(str, Enum):
-    """Estado de un check o estado global del análisis."""
+    """Estado de un check o estado global del anÃ¡lisis."""
 
     OK = "ok"
     WARNING = "warning"
@@ -35,8 +35,8 @@ class Severity(str, Enum):
     MEDIUM = "medium"
     HIGH = "high"
     CRITICAL = "critical"
-    # Aunque no aparece en el ejemplo del contrato, se incluye por decisión
-    # explícita del usuario para poder representar severidades desconocidas.
+    # Aunque no aparece en el ejemplo del contrato, se incluye por decisiÃ³n
+    # explÃ­cita del usuario para poder representar severidades desconocidas.
     UNKNOWN = "unknown"
 
 
@@ -44,7 +44,7 @@ class CheckResult(BaseModel):
     """
     Resultado de un check individual (web, https, dns, mx, spf, dmarc).
 
-    El campo `details` es un diccionario dinámico porque cada check tiene
+    El campo `details` es un diccionario dinÃ¡mico porque cada check tiene
     una estructura de detalles distinta (ver contrato JSON).
     """
 
@@ -61,7 +61,7 @@ class CheckResult(BaseModel):
 
 
 class Summary(BaseModel):
-    """Resumen agregado del análisis."""
+    """Resumen agregado del anÃ¡lisis."""
 
     headline: str
     total_checks: int
@@ -73,7 +73,7 @@ class Summary(BaseModel):
 
 class Checks(BaseModel):
     """
-    Conjunto de checks que componen el análisis de un dominio.
+    Conjunto de checks que componen el anÃ¡lisis de un dominio.
 
     El orden y los nombres coinciden con el contrato JSON.
     """
@@ -97,7 +97,7 @@ class AnalyzeResponse(BaseModel):
     analyzed_at: str
     global_status: Status
     # Entero entre 0 y 100, o null si hay menos de 3 checks evaluados
-    # (ver analyzer._compute_score). El campo siempre está presente.
+    # (ver analyzer._compute_score). El campo siempre estÃ¡ presente.
     score: Optional[int] = Field(..., ge=0, le=100)
     summary: Summary
     checks: Checks

@@ -6,50 +6,50 @@ disponibilidad web, HTTPS/certificado SSL, DNS, correo (MX), SPF y DMARC.
 Este repositorio contiene el **backend** (API construida con FastAPI). En esta
 primera fase, los 6 checks (web, https, dns, mx, spf, dmarc) son **reales** y el
 `score` (0-100) se calcula de forma determinista a partir de sus resultados.
-El contrato de la respuesta está descrito en `webguard_mvp_v1.json` (JSON Schema).
+El contrato de la respuesta estÃ¡ descrito en `nersivo_mvp_v1.json` (JSON Schema).
 
-> 🔒 **Seguridad (SSRF):** las peticiones HTTP/HTTPS solo se hacen a IPs públicas
+> ðŸ”’ **Seguridad (SSRF):** las peticiones HTTP/HTTPS solo se hacen a IPs pÃºblicas
 > y cada redirect se valida antes de conectar (`backend/net_safety.py`).
 
 ---
 
 ## Nota sobre SPF (`details.syntax_valid`)
 
-En el check SPF, `syntax_valid: true` significa únicamente que se ha detectado
-exactamente un registro con el formato básico `v=spf1`. **No implica una
-validación completa de la sintaxis SPF** (no se parsean mecanismos,
-modificadores ni el límite de 10 consultas DNS del RFC 7208). El nombre del
+En el check SPF, `syntax_valid: true` significa Ãºnicamente que se ha detectado
+exactamente un registro con el formato bÃ¡sico `v=spf1`. **No implica una
+validaciÃ³n completa de la sintaxis SPF** (no se parsean mecanismos,
+modificadores ni el lÃ­mite de 10 consultas DNS del RFC 7208). El nombre del
 campo se mantiene por compatibilidad con el contrato; un parser SPF completo
 queda fuera del alcance del MVP.
 
 ## Estructura de carpetas
 
 ```
-Nersivo/                   # raíz del proyecto: todos los comandos se ejecutan desde aquí
-├── backend/               # paquete Python `backend` (API FastAPI)
-│   ├── __init__.py
-│   ├── main.py            # App FastAPI y endpoints
-│   ├── analyzer.py        # Orquesta los checks y calcula resumen/score
-│   ├── net_safety.py      # Protección SSRF (validación de IPs y redirects)
-│   ├── models.py          # Modelos Pydantic (contrato de la respuesta)
-│   ├── domain_utils.py    # Validación y normalización de dominios
-│   ├── requirements.txt   # Dependencias
-│   ├── checks/            # Los 6 checks reales (+ tests de DMARC)
-│   └── tests/             # Tests de score, SSRF, subdominios, checks y contrato
-├── frontend/              # Interfaz web oscura (HTML + CSS + JS, fuentes incluidas, sin build)
-├── pytest.ini             # Configuración de los tests (se ejecutan desde la raíz)
-└── README.md
+Nersivo/                   # raÃ­z del proyecto: todos los comandos se ejecutan desde aquÃ­
+â”œâ”€â”€ backend/               # paquete Python `backend` (API FastAPI)
+â”‚   â”œâ”€â”€ __init__.py
+â”‚   â”œâ”€â”€ main.py            # App FastAPI y endpoints
+â”‚   â”œâ”€â”€ analyzer.py        # Orquesta los checks y calcula resumen/score
+â”‚   â”œâ”€â”€ net_safety.py      # ProtecciÃ³n SSRF (validaciÃ³n de IPs y redirects)
+â”‚   â”œâ”€â”€ models.py          # Modelos Pydantic (contrato de la respuesta)
+â”‚   â”œâ”€â”€ domain_utils.py    # ValidaciÃ³n y normalizaciÃ³n de dominios
+â”‚   â”œâ”€â”€ requirements.txt   # Dependencias
+â”‚   â”œâ”€â”€ checks/            # Los 6 checks reales (+ tests de DMARC)
+â”‚   â””â”€â”€ tests/             # Tests de score, SSRF, subdominios, checks y contrato
+â”œâ”€â”€ frontend/              # Interfaz web oscura (HTML + CSS + JS, fuentes incluidas, sin build)
+â”œâ”€â”€ pytest.ini             # ConfiguraciÃ³n de los tests (se ejecutan desde la raÃ­z)
+â””â”€â”€ README.md
 ```
 
-El backend es un **paquete Python**: los módulos se importan con rutas relativas
+El backend es un **paquete Python**: los mÃ³dulos se importan con rutas relativas
 (`from .analyzer import ...`), por lo que debe arrancarse como `backend.main`
-desde la raíz del proyecto (no hace falta, ni funciona, entrar en `backend/`).
+desde la raÃ­z del proyecto (no hace falta, ni funciona, entrar en `backend/`).
 
 ---
 
-## Instalación de dependencias
+## InstalaciÃ³n de dependencias
 
-Desde la raíz del proyecto, con un entorno virtual:
+Desde la raÃ­z del proyecto, con un entorno virtual:
 
 ```bash
 python3 -m venv .venv
@@ -61,7 +61,7 @@ pip install -r backend/requirements.txt
 
 ## Arrancar Nersivo
 
-Desde la raíz del proyecto, en **dos terminales**:
+Desde la raÃ­z del proyecto, en **dos terminales**:
 
 ```bash
 # 1) Backend (API en http://localhost:8000)
@@ -73,12 +73,12 @@ python -m http.server 5500
 ```
 
 Abre `http://localhost:5500` para usar Nersivo.
-La API queda en `http://localhost:8000`; su documentación interactiva (Swagger UI)
-está en `http://localhost:8000/docs`.
+La API queda en `http://localhost:8000`; su documentaciÃ³n interactiva (Swagger UI)
+estÃ¡ en `http://localhost:8000/docs`.
 
 ## Ejecutar los tests
 
-Desde la raíz del proyecto:
+Desde la raÃ­z del proyecto:
 
 ```bash
 pytest
@@ -88,9 +88,9 @@ pytest
 
 ## Endpoints
 
-### 1. `GET /` — Bienvenida
+### 1. `GET /` â€” Bienvenida
 
-Comprueba que la API está activa.
+Comprueba que la API estÃ¡ activa.
 
 ```bash
 curl http://localhost:8000/
@@ -105,7 +105,7 @@ Respuesta:
 }
 ```
 
-### 2. `GET /health` — Estado de salud
+### 2. `GET /health` â€” Estado de salud
 
 ```bash
 curl http://localhost:8000/health
@@ -120,9 +120,9 @@ Respuesta:
 }
 ```
 
-### 3. `GET /analyze/{domain}` — Analizar un dominio
+### 3. `GET /analyze/{domain}` â€” Analizar un dominio
 
-Valida el dominio y devuelve el análisis real (6 checks + score).
+Valida el dominio y devuelve el anÃ¡lisis real (6 checks + score).
 
 ```bash
 curl http://localhost:8000/analyze/midominio.es
@@ -155,7 +155,7 @@ Respuesta (resumida):
 }
 ```
 
-Si el dominio no es válido (una IP, una URL con esquema, etc.), la API responde
+Si el dominio no es vÃ¡lido (una IP, una URL con esquema, etc.), la API responde
 con un **error 400** y el detalle del motivo:
 
 ```bash
@@ -164,6 +164,6 @@ curl http://localhost:8000/analyze/127.0.0.1
 
 ```json
 {
-  "detail": "Las direcciones IP no están permitidas. Introduce un nombre de dominio, por ejemplo 'midominio.es'."
+  "detail": "Las direcciones IP no estÃ¡n permitidas. Introduce un nombre de dominio, por ejemplo 'midominio.es'."
 }
 ```
