@@ -1,0 +1,227 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AnalyzeResponse",
+  "$defs": {
+    "CheckResult": {
+      "description": "Resultado de un check individual (web, https, dns, mx, spf, dmarc).\n\nEl campo `details` es un diccionario dinámico porque cada check tiene\nuna estructura de detalles distinta (ver contrato JSON).",
+      "properties": {
+        "status": {
+          "$ref": "#/$defs/Status"
+        },
+        "severity": {
+          "$ref": "#/$defs/Severity"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "summary": {
+          "title": "Summary",
+          "type": "string"
+        },
+        "checked": {
+          "title": "Checked",
+          "type": "boolean"
+        },
+        "details": {
+          "additionalProperties": true,
+          "title": "Details",
+          "type": "object",
+          "description": "Diccionario libre: cada check devuelve sus propias claves."
+        },
+        "technical_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Technical Reason"
+        },
+        "recommendation": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Recommendation"
+        },
+        "user_message": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "User Message"
+        }
+      },
+      "required": [
+        "status",
+        "severity",
+        "title",
+        "summary",
+        "checked",
+        "details"
+      ],
+      "title": "CheckResult",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "Checks": {
+      "description": "Conjunto de checks que componen el análisis de un dominio.\n\nEl orden y los nombres coinciden con el contrato JSON.",
+      "properties": {
+        "web": {
+          "$ref": "#/$defs/CheckResult"
+        },
+        "https": {
+          "$ref": "#/$defs/CheckResult"
+        },
+        "dns": {
+          "$ref": "#/$defs/CheckResult"
+        },
+        "mx": {
+          "$ref": "#/$defs/CheckResult"
+        },
+        "spf": {
+          "$ref": "#/$defs/CheckResult"
+        },
+        "dmarc": {
+          "$ref": "#/$defs/CheckResult"
+        }
+      },
+      "required": [
+        "web",
+        "https",
+        "dns",
+        "mx",
+        "spf",
+        "dmarc"
+      ],
+      "title": "Checks",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "Severity": {
+      "description": "Nivel de severidad asociado a un check.",
+      "enum": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "critical",
+        "unknown"
+      ],
+      "title": "Severity",
+      "type": "string"
+    },
+    "Status": {
+      "description": "Estado de un check o estado global del análisis.",
+      "enum": [
+        "ok",
+        "warning",
+        "error",
+        "unknown"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "Summary": {
+      "description": "Resumen agregado del análisis.",
+      "properties": {
+        "headline": {
+          "title": "Headline",
+          "type": "string"
+        },
+        "total_checks": {
+          "title": "Total Checks",
+          "type": "integer"
+        },
+        "passed": {
+          "title": "Passed",
+          "type": "integer"
+        },
+        "warnings": {
+          "title": "Warnings",
+          "type": "integer"
+        },
+        "errors": {
+          "title": "Errors",
+          "type": "integer"
+        },
+        "unknown": {
+          "title": "Unknown",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "headline",
+        "total_checks",
+        "passed",
+        "warnings",
+        "errors",
+        "unknown"
+      ],
+      "title": "Summary",
+      "type": "object",
+      "additionalProperties": false
+    }
+  },
+  "description": "Contrato de la respuesta real del endpoint GET /analyze/{domain}. Generado a partir de los modelos Pydantic (backend/models.py) y revisado.",
+  "properties": {
+    "domain": {
+      "title": "Domain",
+      "type": "string"
+    },
+    "analyzed_at": {
+      "title": "Analyzed At",
+      "type": "string",
+      "description": "Fecha/hora UTC del análisis, formato YYYY-MM-DDTHH:MM:SSZ.",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"
+    },
+    "global_status": {
+      "$ref": "#/$defs/Status",
+      "description": "Estado global: error > warning > ok; unknown si ningún check pudo evaluarse."
+    },
+    "score": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Score",
+      "description": "Puntuación determinista 0-100 calculada a partir de los checks, o null si hay menos de 3 checks evaluados (ok/warning/error)."
+    },
+    "summary": {
+      "$ref": "#/$defs/Summary"
+    },
+    "checks": {
+      "$ref": "#/$defs/Checks"
+    }
+  },
+  "required": [
+    "domain",
+    "analyzed_at",
+    "global_status",
+    "score",
+    "summary",
+    "checks"
+  ],
+  "type": "object",
+  "additionalProperties": false
+}

@@ -1,0 +1,117 @@
+# =========================
+
+# Nersivo - Git Ignore
+
+# =========================
+
+# -------------------------
+
+# Python
+
+# -------------------------
+
+**pycache**/
+*.py[cod]
+*$py.class
+*.pyo
+
+# Virtual environments
+
+.venv/
+venv/
+env/
+ENV/
+backend/.venv/
+
+# Python tooling
+
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+.abacus.donotdelete
+htmlcov/
+estructura.txt
+
+# -------------------------
+
+# Environment / secrets
+
+# -------------------------
+
+.env
+.env.*
+!.env.example
+
+# -------------------------
+
+# Logs
+
+# -------------------------
+
+*.log
+
+# -------------------------
+
+# OS
+
+# -------------------------
+
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# -------------------------
+
+# IDE / editors
+
+# -------------------------
+
+.vscode/*
+!.vscode/settings.json
+.idea/
+
+# -------------------------
+
+# Node / frontend
+
+# -------------------------
+
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Build output
+
+dist/
+build/
+.next/
+.nuxt/
+.cache/
+
+# -------------------------
+
+# Temporary files
+
+# -------------------------
+
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+
+# -------------------------
+
+# Local project files
+
+# -------------------------
+
+webguard.log
+*.local
+
+```
+```
