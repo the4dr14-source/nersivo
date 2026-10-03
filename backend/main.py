@@ -6,7 +6,8 @@ Expone tres endpoints:
 - GET /health            -> estado de salud del servicio.
 - GET /analyze/{domain}  -> analiza un dominio y devuelve el resultado.
 
-CORS está habilitado para permitir el consumo desde un futuro frontend.
+CORS está restringido a los orígenes oficiales de Nersivo y a los entornos
+locales de desarrollo.
 """
 
 from datetime import datetime
@@ -26,11 +27,16 @@ app = FastAPI(
 )
 
 # --- CORS -----------------------------------------------------------------
-# Habilitado de forma permisiva para facilitar el desarrollo del frontend.
-# TODO: restringir `allow_origins` a los orígenes concretos en producción.
+# Solo permitimos el frontend oficial y los orígenes locales de desarrollo.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "https://nersivo-frontend.onrender.com",
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:5173",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
