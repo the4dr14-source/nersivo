@@ -189,7 +189,7 @@ function checkCard(check, index, onOpen) {
     ]
   );
   btn.addEventListener("click", () => onOpen(check, btn));
-  return el("li", {}, [btn]);
+  return el("li", { "data-check-item": check.key }, [btn]);
 }
 
 /**
@@ -260,7 +260,10 @@ export function renderResults(container, view, handlers) {
     el("section", { "aria-labelledby": "checks-title" }, [
       el("h3", { id: "checks-title", className: "section-title", text: "Lo que hemos revisado" }),
       el("ul", { className: "check-grid" }, view.checks.map((c, i) => checkCard(c, i, handlers.onOpenDetail))),
-    ])
+    ]),
+
+    // Sección de monitorización: la rellena monitor.js (mountMonitor).
+    el("section", { id: "monitor-slot", className: "monitor", "aria-labelledby": "monitor-title", hidden: true })
   );
 
   container.querySelector("#restart-btn").addEventListener("click", handlers.onRestart);
@@ -295,12 +298,19 @@ function technicalConsole(check) {
  * @param {HTMLDialogElement} dialog
  * @param {ReturnType<import("./presenter.js").presentCheck>} check
  * @param {Function} onClose
+ * @param {{onOpenGuide?: Function}} [extra] Si hay guía para esta comprobación, `onOpenGuide` la abre.
  */
-export function renderDetail(dialog, check, onClose) {
+export function renderDetail(dialog, check, onClose, extra = {}) {
   const closeBtn = el("button", { type: "button", className: "dialog-close", "aria-label": "Cerrar detalle", text: "✕" });
   closeBtn.addEventListener("click", onClose);
   const closeBtn2 = el("button", { type: "button", className: "btn btn-secondary", text: "Cerrar" });
   closeBtn2.addEventListener("click", onClose);
+
+  let guideBtn = null;
+  if (extra.onOpenGuide) {
+    guideBtn = el("button", { type: "button", className: "btn btn-primary", text: "Cómo solucionarlo" });
+    guideBtn.addEventListener("click", extra.onOpenGuide);
+  }
 
   dialog.replaceChildren(
     el("div", { className: `dialog-inner dialog-${check.status}` }, [
@@ -312,7 +322,6 @@ export function renderDetail(dialog, check, onClose) {
         closeBtn,
       ]),
       statusBadge(check.status, check.statusLabel, check.statusSymbol),
-      check.headline ? el("p", { className: "detail-headline" }, [el("strong", { text: check.headline })]) : null,
 
       // NIVEL 1 · lenguaje de negocio
       el("div", { className: `detail-explanation explanation-${check.status}` }, [
@@ -329,7 +338,7 @@ export function renderDetail(dialog, check, onClose) {
         technicalConsole(check),
       ]),
 
-      el("div", { className: "dialog-actions" }, [closeBtn2]),
+      el("div", { className: "dialog-actions" }, [guideBtn, closeBtn2]),
     ])
   );
 }

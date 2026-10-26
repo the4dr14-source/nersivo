@@ -1,9 +1,11 @@
 // Punto de entrada de Nersivo: controla las pantallas y conecta formulario, API y presentación.
 
-import { analyzeDomain, ApiError } from "./api.js";
+import { analyzeDomain, ApiError, fetchGuides } from "./api.js";
 import { validateDomain } from "./validation.js";
 import { presentAnalysis, presentError } from "./presenter.js";
 import { renderResults, renderDetail } from "./components.js";
+import { renderGuide, guideButton } from "./guide-view.js";
+import { mountMonitor } from "./monitor.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -22,6 +24,8 @@ const dialog = $("detail-dialog");
 let currentDomain = "";
 let lastTrigger = null;
 let requestId = 0; // descarta respuestas de análisis antiguos
+let currentView = null; // análisis presentado actualmente
+let guidesByCheck = new Map(); // guía «Cómo solucionarlo» por comprobación (si la hay)
 
 $("year").textContent = String(new Date().getFullYear());
 
@@ -56,9 +60,14 @@ async function runAnalysis(domain) {
       onRetry: () => runAnalysis(currentDomain),
     });
     document.title = `Resultados de ${view.domain} · Nersivo`;
+    currentView = view;
+    guidesByCheck = new Map();
     show("results");
     window.scrollTo({ top: 0 });
     $("results-title").focus({ preventScroll: true });
+    // Extras opcionales: si fallan, los resultados siguen mostrándose igual.
+    loadGuides(data, myRequest);
+    mountMonitor($("monitor-slot"), view.domain, () => myRequest !== requestId);
   } catch (err) {
     if (myRequest !== requestId) return;
     const friendly = presentError(err instanceof ApiError ? err : null);
@@ -76,8 +85,57 @@ async function runAnalysis(domain) {
   }
 }
 
+/** Descarga las guías de solución y añade el botón «Cómo solucionarlo» a cada problema. */
+async function loadGuides(data, myRequest) {
+  try {
+    const { guides } = await fetchGuides(data);
+    if (myRequest !== requestId) return;
+    guidesByCheck = new Map(guides.map((g) => [g.check, g]));
+    for (const [key, guide] of guidesByCheck) {
+      const check = currentView.checks.find((c) => c.key === key); // solo claves conocidas
+      if (!check) continue;
+      const item = views.results.querySelector(`[data-check-item="${check.key}"]`);
+      if (!item || item.querySelector(".guide-btn")) continue;
+      item.append(guideBtn(check, guide));
+    }
+  } catch (err) {
+    console.error("[Nersivo] No se han podido cargar las guías:", err);
+  }
+}
+
+function guideBtn(check, guide) {
+  return guideButton(guide, (trigger) => openGuide(check, guide, trigger));
+}
+
+function openGuide(check, guide, trigger) {
+  lastTrigger = trigger;
+  showGuideInDialog(check, guide);
+  openDialog();
+}
+
+function showGuideInDialog(check, guide) {
+  renderGuide(dialog, check, guide, {
+    onClose: closeDetail,
+    onBack: () => { renderDetail(dialog, check, closeDetail, detailExtra(check)); },
+  });
+  dialog.scrollTop = 0;
+}
+
+function detailExtra(check) {
+  const guide = guidesByCheck.get(check.key);
+  return guide ? { onOpenGuide: () => showGuideInDialog(check, guide) } : {};
+}
+
+function openDialog() {
+  dialog.classList.remove("is-closing");
+  if (typeof dialog.showModal === "function") dialog.showModal();
+  else dialog.setAttribute("open", "");
+}
+
 function restart() {
   requestId++;
+  currentView = null;
+  guidesByCheck = new Map();
   document.title = "Nersivo · Comprueba la salud de tu web y correo";
   setFieldError("");
   show("home");
@@ -88,10 +146,8 @@ function restart() {
 
 function openDetail(check, trigger) {
   lastTrigger = trigger;
-  renderDetail(dialog, check, closeDetail);
-  dialog.classList.remove("is-closing");
-  if (typeof dialog.showModal === "function") dialog.showModal();
-  else dialog.setAttribute("open", "");
+  renderDetail(dialog, check, closeDetail, detailExtra(check));
+  openDialog();
 }
 
 function closeDetail() {

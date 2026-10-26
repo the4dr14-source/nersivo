@@ -17,10 +17,17 @@ Criterios de diseño (MVP):
     * DNS funciona pero NO hay DMARC (incluye NXDOMAIN/NoAnswer del subdominio
       `_dmarc`, que en la práctica significa "no existe DMARC") -> WARNING
       (missing_dmarc), checked=True.
-    * DNS NO se puede consultar de forma fiable (timeout, resolver caído, otros
-      errores) -> UNKNOWN (dns_lookup_error), checked=True.
+    * DNS NO se puede consultar de forma fiable -> UNKNOWN, checked=True
+      (nunca se presenta como ausencia de DMARC):
+        - timeout -> technical_reason "timeout" (mismo código que SPF/MX/DNS).
+        - otros errores DNS (SERVFAIL, resolver sin configurar...) ->
+          "dns_lookup_error".
+    * Error INTERNO inesperado (bug de código o de parseo, no de DNS) ->
+      UNKNOWN con "unknown_error" (mismo código que web/https), y la traza se
+      registra en el log para que el bug no quede oculto como un fallo de DNS.
 """
 
+import logging
 from typing import List, Optional
 
 import dns.exception
@@ -28,8 +35,15 @@ import dns.resolver
 
 from ..models import CheckResult, Severity, Status
 
+logger = logging.getLogger(__name__)
+
 # --- Constantes de configuración -----------------------------------------
-_TIMEOUT_SECONDS = 5.0
+# Tiempos del resolver: por intento (`timeout`) y total (`lifetime`). Son los
+# mismos valores por defecto que usan los demás checks vía `dns.resolver.resolve`.
+# `timeout` DEBE ser menor que `lifetime`: si fueran iguales, un primer nameserver
+# que no responde consumiría todo el plazo y nunca se probaría el siguiente.
+_ATTEMPT_TIMEOUT_SECONDS = 2.0
+_LIFETIME_SECONDS = 5.0
 _TITLE = "DMARC"
 _DMARC_PREFIX = "v=dmarc1"
 _VALID_POLICIES = {"none", "quarantine", "reject"}
@@ -87,6 +101,52 @@ def _reconstruct_txt_record(txt_strings: tuple) -> str:
         else:
             parts.append(str(part))
     return "".join(parts)
+
+
+def _extract_dmarc_records(answers) -> List[str]:
+    """
+    Reconstruye los TXT de la respuesta y devuelve los candidatos DMARC.
+
+    Un candidato es un TXT que empieza por "v=DMARC1" (sin distinguir mayúsculas).
+    Esto es parseo local, no una consulta DNS: si falla es un error interno.
+    """
+    records: List[str] = []
+    for rdata in answers:
+        txt_content = _reconstruct_txt_record(rdata.strings).strip()
+        if txt_content.lower().startswith(_DMARC_PREFIX):
+            records.append(txt_content)
+    return records
+
+
+def _unknown_check(
+    error: str,
+    summary: str,
+    recommendation: Optional[str] = None,
+    user_message: Optional[str] = None,
+) -> CheckResult:
+    """
+    CheckResult UNKNOWN (checked=True) cuando NO se ha podido determinar el estado.
+
+    Es distinto de "DMARC ausente" (WARNING, missing_dmarc): aquí no sabemos si
+    existe o no. `error` se usa como `details.error` y como `technical_reason`.
+    """
+    return CheckResult(
+        status=Status.UNKNOWN,
+        severity=Severity.UNKNOWN,
+        title=_TITLE,
+        summary=summary,
+        checked=True,
+        details=_build_details(
+            found=False,
+            record=None,
+            policy=None,
+            syntax_valid=None,
+            error=error,
+        ),
+        technical_reason=error,
+        recommendation=recommendation,
+        user_message=user_message,
+    )
 
 
 def _extract_policy(record: str) -> Optional[str]:
@@ -186,13 +246,19 @@ def check_dmarc(domain: str) -> CheckResult:
     Reglas de estado:
     - Exactamente 1 DMARC válido -> ok (severity none). Se informa de la política.
     - Sin DMARC (incluye NXDOMAIN/NoAnswer del subdominio) -> warning
-      (severity medium, technical_reason "missing_dmarc").
+      (severity medium, technical_reason "missing_dmarc"). Excepción: si el
+      NXDOMAIN es de `_dmarc.<dominio>` y no se puede determinar si el dominio
+      base existe -> unknown ("dns_lookup_error"), nunca "missing_dmarc".
     - 1 DMARC candidato inválido -> error (severity high, technical_reason
       "invalid_dmarc_record").
     - Múltiples DMARC candidatos -> error (severity high, technical_reason
       "multiple_dmarc_records").
-    - Error real de consulta DNS (timeout, resolver, etc.) -> unknown
-      (severity unknown, technical_reason "dns_lookup_error").
+    - Timeout de la consulta DNS -> unknown (severity unknown,
+      technical_reason "timeout").
+    - Otro error real de consulta DNS (SERVFAIL, resolver sin configurar, etc.)
+      -> unknown (severity unknown, technical_reason "dns_lookup_error").
+    - Error interno inesperado (no DNS) -> unknown (severity unknown,
+      technical_reason "unknown_error"); se registra la traza en el log.
 
     Args:
         domain: Dominio ya validado y normalizado (sin esquema ni ruta).
@@ -203,20 +269,15 @@ def check_dmarc(domain: str) -> CheckResult:
     dmarc_name = f"_dmarc.{domain}"
 
     try:
-        # Configurar resolver con timeout.
+        # Resolver con timeout por intento (2 s) < lifetime total (5 s): así, si
+        # el primer nameserver no responde, se prueba el siguiente dentro del plazo.
         resolver = dns.resolver.Resolver()
-        resolver.timeout = _TIMEOUT_SECONDS
-        resolver.lifetime = _TIMEOUT_SECONDS
+        resolver.timeout = _ATTEMPT_TIMEOUT_SECONDS
+        resolver.lifetime = _LIFETIME_SECONDS
 
         # Consultar registros TXT del subdominio especial _dmarc.
+        # Este `try` cubre SOLO la consulta DNS; el parseo va después, aparte.
         answers = resolver.resolve(dmarc_name, "TXT")
-
-        # Reconstruir los TXT completos y filtrar los candidatos DMARC.
-        dmarc_records: List[str] = []
-        for rdata in answers:
-            txt_content = _reconstruct_txt_record(rdata.strings).strip()
-            if txt_content.lower().startswith(_DMARC_PREFIX):
-                dmarc_records.append(txt_content)
 
     except dns.resolver.NXDOMAIN:
         # `_dmarc.<domain>` no existe. Esto puede deberse a dos motivos:
@@ -224,8 +285,26 @@ def check_dmarc(domain: str) -> CheckResult:
         #   2. El dominio base NO existe (NXDOMAIN del propio dominio).
         # Solo en el caso 1 tiene sentido informar de "missing_dmarc". Si el
         # dominio base no se resuelve, no podemos concluir que falte DMARC.
-        if _base_domain_resolvable(domain, resolver) is False:
+        # Este `try` es necesario: una excepción lanzada dentro de un `except`
+        # NO la capturan los `except` hermanos de abajo y escaparía de la función.
+        try:
+            base_resolvable = _base_domain_resolvable(domain, resolver)
+        except Exception:  # noqa: BLE001 - último recurso: nunca romper la API.
+            # Bug interno (no DNS: los errores DNS ya se tratan dentro del helper).
+            logger.exception("Error inesperado al comprobar el dominio base de %s", domain)
+            return _unknown_check(
+                error="unknown_error",
+                summary="No se ha podido determinar la configuración DMARC del dominio.",
+            )
+        if base_resolvable is False:
             return _dmarc_dns_resolution_error()
+        if base_resolvable is None:
+            # No se pudo determinar si el dominio base existe (A y AAAA fallaron
+            # sin respuesta concluyente): no se puede afirmar que falte DMARC.
+            return _unknown_check(
+                error="dns_lookup_error",
+                summary="No se ha podido determinar la configuración DMARC del dominio.",
+            )
         return CheckResult(
             status=Status.WARNING,
             severity=Severity.MEDIUM,
@@ -271,47 +350,49 @@ def check_dmarc(domain: str) -> CheckResult:
             user_message="Tu dominio no tiene DMARC configurado.",
         )
 
-    except (dns.resolver.Timeout, dns.resolver.NoNameservers, dns.exception.DNSException):
-        # No podemos determinar la configuración de forma fiable -> UNKNOWN.
-        return CheckResult(
-            status=Status.UNKNOWN,
-            severity=Severity.UNKNOWN,
-            title=_TITLE,
-            summary="No se ha podido determinar la configuración DMARC del dominio.",
-            checked=True,
-            details=_build_details(
-                found=False,
-                record=None,
-                policy=None,
-                syntax_valid=None,
-                error="dns_lookup_error",
+    except dns.exception.Timeout:
+        # Agotado el tiempo de espera (incluye `LifetimeTimeout`). No sabemos si
+        # hay DMARC o no -> UNKNOWN con el mismo código `timeout` que SPF/MX/DNS.
+        return _unknown_check(
+            error="timeout",
+            summary="No hemos podido comprobar la configuración DMARC (timeout).",
+            recommendation=(
+                "La consulta DNS ha tardado demasiado. Puede ser algo temporal; "
+                "inténtalo de nuevo más tarde."
             ),
-            technical_reason="dns_lookup_error",
-            recommendation=None,
-            user_message=None,
+            user_message="No hemos podido comprobar tu dominio porque la consulta DNS tardó demasiado.",
+        )
+
+    except dns.exception.DNSException:
+        # Otros fallos de resolución (NoNameservers/SERVFAIL, resolver sin
+        # configurar, YXDOMAIN, nombre mal formado...) -> UNKNOWN, no "sin DMARC".
+        return _unknown_check(
+            error="dns_lookup_error",
+            summary="No se ha podido determinar la configuración DMARC del dominio.",
         )
 
     except Exception:  # noqa: BLE001 - último recurso: nunca romper la API.
-        # Cualquier excepción inesperada se trata como error de consulta DNS.
-        return CheckResult(
-            status=Status.UNKNOWN,
-            severity=Severity.UNKNOWN,
-            title=_TITLE,
+        # NO es un error de DNS (los DNS ya se han tratado arriba): es un fallo
+        # inesperado. Se distingue con su propio código y se registra la traza
+        # para que un bug interno no se haga pasar por un problema de resolución.
+        logger.exception("Error inesperado (no DNS) en la consulta DMARC de %s", domain)
+        return _unknown_check(
+            error="unknown_error",
             summary="No se ha podido determinar la configuración DMARC del dominio.",
-            checked=True,
-            details=_build_details(
-                found=False,
-                record=None,
-                policy=None,
-                syntax_valid=None,
-                error="dns_lookup_error",
-            ),
-            technical_reason="dns_lookup_error",
-            recommendation=None,
-            user_message=None,
         )
 
-    # --- La consulta DNS funcionó: evaluamos los candidatos DMARC --------
+    # --- La consulta DNS funcionó: extraemos los candidatos DMARC ---------
+    # Parseo fuera del `try` de DNS: un fallo aquí es un bug interno, no DNS.
+    try:
+        dmarc_records = _extract_dmarc_records(answers)
+    except Exception:  # noqa: BLE001 - último recurso: nunca romper la API.
+        logger.exception("Error inesperado al interpretar la respuesta DMARC de %s", domain)
+        return _unknown_check(
+            error="unknown_error",
+            summary="No se ha podido determinar la configuración DMARC del dominio.",
+        )
+
+    # --- Evaluamos los candidatos DMARC ----------------------------------
     record_count = len(dmarc_records)
 
     # Caso: no hay ningún registro DMARC candidato (había otros TXT, o ninguno).

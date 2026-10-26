@@ -1,13 +1,17 @@
 """
 Punto de entrada de la API de Nersivo (FastAPI).
 
-Expone tres endpoints:
+Endpoints propios:
 - GET /                  -> mensaje de bienvenida.
 - GET /health            -> estado de salud del servicio.
 - GET /analyze/{domain}  -> analiza un dominio y devuelve el resultado.
 
+Los routers de guías (`/guides`) y monitorización (`/monitor`,
+`/internal/monitor/run`) se incluyen al final de este archivo.
+
 CORS está restringido a los orígenes oficiales de Nersivo y a los entornos
-locales de desarrollo.
+locales de desarrollo. El endpoint de análisis está protegido por un rate
+limiter en memoria (`AnalyzeRateLimitMiddleware`).
 """
 
 from datetime import datetime
@@ -16,6 +20,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from .analyzer import analyze_domain
+from .guides.routes import router as guides_router
+from .monitoring.routes import router as monitoring_router
 from .domain_utils import validate_and_normalize_domain
 from .models import AnalyzeResponse
 from .rate_limit import AnalyzeRateLimitMiddleware
@@ -26,20 +32,34 @@ app = FastAPI(
     version="1.0",
 )
 
-# --- CORS -----------------------------------------------------------------
-# Solo permitimos el frontend oficial y los orígenes locales de desarrollo.
+# --- Middlewares -------------------------------------------------------------
+# IMPORTANTE: en Starlette el ÚLTIMO middleware añadido es el más EXTERNO.
+# Por eso el rate limiter se registra primero y CORS después: CORS envuelve al
+# limitador y las respuestas 429 también llevan cabeceras CORS (si no, el
+# navegador no podría leer el 429 y lo mostraría como un error de red).
+
+# Rate limiting en memoria (30 peticiones / 60 s por IP, solo en /analyze/).
+app.add_middleware(AnalyzeRateLimitMiddleware)
+
+# CORS: lista explícita de orígenes (sin comodines). No se exponen cookies ni
+# credenciales, y solo se permiten los métodos y cabeceras que usa el frontend.
+# `X-Cron-Token` NO se permite: lo envía un cron externo, nunca un navegador.
+ALLOWED_ORIGINS = [
+    "https://nersivo-frontend.onrender.com",
+    "http://localhost:5500",
+    "http://127.0.0.1:5500",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://nersivo-frontend.onrender.com",
-        "http://localhost:3000",
-        "http://localhost:5173",
-        "http://127.0.0.1:3000",
-        "http://127.0.0.1:5173",
-    ],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "DELETE"],
+    allow_headers=["Content-Type", "X-Monitor-Token"],
 )
 
 
@@ -83,3 +103,8 @@ def analyze(domain: str) -> AnalyzeResponse:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     return analyze_domain(normalized_domain)
+
+
+# --- Routers adicionales (no modifican /analyze ni su contrato) ---------------
+app.include_router(guides_router)
+app.include_router(monitoring_router)

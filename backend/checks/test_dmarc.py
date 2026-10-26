@@ -5,6 +5,7 @@ Se mockea `dns.resolver.Resolver.resolve` para no depender de la red y cubrir
 los 9 casos de la especificación del MVP.
 """
 
+import logging
 from unittest import mock
 
 import pytest
@@ -193,13 +194,44 @@ def test_dmarc_multiples_registros_es_error():
 
 
 # ---------------------------------------------------------------------------
-# Caso 8: error/timeout de consulta DNS -> unknown (NO error)
+# Caso 8: error/timeout de consulta DNS -> unknown (NO error y NUNCA "sin DMARC")
 # ---------------------------------------------------------------------------
+def _assert_fallo_no_es_ausencia(result):
+    """Un fallo de resolución jamás debe presentarse como DMARC ausente confirmado."""
+    assert result.status == Status.UNKNOWN
+    assert result.status != Status.WARNING
+    assert result.technical_reason != "missing_dmarc"
+    assert result.details["found"] is False
+    assert result.details["record"] is None
+    assert result.checked is True
+
+
 @pytest.mark.parametrize(
     "exc",
     [
         dns.resolver.Timeout(),
-        dns.resolver.NoNameservers(),
+        dns.resolver.LifetimeTimeout(timeout=5.0, errors=[]),
+        dns.exception.Timeout(),  # clase base: no es el alias de `dns.resolver.Timeout`
+    ],
+)
+def test_dmarc_timeout_dns_es_unknown_con_codigo_timeout(exc):
+    # `timeout` es el mismo código que ya usan SPF/MX/DNS y que entiende el frontend.
+    with mock.patch.object(
+        dns.resolver.Resolver, "resolve", _make_resolve(exception=exc)
+    ):
+        result = check_dmarc("example.com")
+
+    _assert_fallo_no_es_ausencia(result)
+    assert result.technical_reason == "timeout"
+    assert result.details["error"] == "timeout"
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        dns.resolver.NoNameservers(),  # SERVFAIL/REFUSED de todos los servidores
+        dns.resolver.NoResolverConfiguration(),
+        dns.resolver.YXDOMAIN(),
         dns.exception.DNSException(),
     ],
 )
@@ -209,10 +241,169 @@ def test_dmarc_error_dns_es_unknown(exc):
     ):
         result = check_dmarc("example.com")
 
-    assert result.status == Status.UNKNOWN
+    _assert_fallo_no_es_ausencia(result)
     assert result.technical_reason == "dns_lookup_error"
     assert result.details["error"] == "dns_lookup_error"
+
+
+def test_dmarc_resolver_que_falla_al_crearse_es_error_dns():
+    # `Resolver()` lee la configuración del sistema y puede lanzar
+    # NoResolverConfiguration (una DNSException) al construirse.
+    with mock.patch.object(
+        dns.resolver.Resolver,
+        "__init__",
+        side_effect=dns.resolver.NoResolverConfiguration(),
+    ):
+        result = check_dmarc("example.com")
+
+    _assert_fallo_no_es_ausencia(result)
+    assert result.technical_reason == "dns_lookup_error"
+
+
+# ---------------------------------------------------------------------------
+# Errores INTERNOS (no DNS): no deben disfrazarse de dns_lookup_error
+# ---------------------------------------------------------------------------
+def _assert_error_interno(result, caplog, exc_type):
+    assert result.status == Status.UNKNOWN
+    assert result.technical_reason == "unknown_error"
+    assert result.technical_reason != "dns_lookup_error"
+    assert result.details["error"] == "unknown_error"
+    assert result.details["found"] is False
     assert result.checked is True
+    # La traza queda registrada para que el bug no pase desapercibido.
+    assert any(
+        r.levelno == logging.ERROR and r.exc_info and r.exc_info[0] is exc_type
+        for r in caplog.records
+    )
+
+
+@pytest.mark.parametrize("exc", [RuntimeError("bug"), AttributeError("bug"), TypeError("bug")])
+def test_dmarc_excepcion_no_dns_no_se_clasifica_como_error_dns(exc, caplog):
+    with caplog.at_level(logging.ERROR, logger="backend.checks.dmarc"), mock.patch.object(
+        dns.resolver.Resolver, "resolve", _make_resolve(exception=exc)
+    ):
+        result = check_dmarc("example.com")
+
+    _assert_error_interno(result, caplog, type(exc))
+
+
+def test_dmarc_error_de_parseo_no_se_clasifica_como_error_dns(caplog):
+    # La consulta DNS termina bien, pero la respuesta no se puede interpretar
+    # (un rdata sin `.strings`): es un bug interno, no un fallo de resolución.
+    with caplog.at_level(logging.ERROR, logger="backend.checks.dmarc"), mock.patch.object(
+        dns.resolver.Resolver, "resolve", _make_resolve(return_value=[object()])
+    ):
+        result = check_dmarc("example.com")
+
+    _assert_error_interno(result, caplog, AttributeError)
+
+
+# ---------------------------------------------------------------------------
+# NXDOMAIN de `_dmarc.<dominio>`: el resultado depende de `_base_domain_resolvable`
+#   True -> DMARC ausente | False -> dominio no resoluble | None -> no concluyente
+#   excepción inesperada -> error interno (no DNS)
+# ---------------------------------------------------------------------------
+_BASE_DOMAIN = "backend.checks.dmarc._base_domain_resolvable"
+
+
+def test_dmarc_nxdomain_con_dominio_base_resoluble_es_ausencia_confirmada():
+    with mock.patch.object(
+        dns.resolver.Resolver, "resolve", _make_resolve(exception=dns.resolver.NXDOMAIN())
+    ), mock.patch(_BASE_DOMAIN, return_value=True):
+        result = check_dmarc("example.com")
+
+    assert result.status == Status.WARNING
+    assert result.severity.value == "medium"
+    assert result.technical_reason == "missing_dmarc"
+    assert result.details["found"] is False
+    assert result.details["error"] is None
+    assert result.checked is True
+
+
+def test_dmarc_nxdomain_con_dominio_base_inexistente_se_conserva():
+    with mock.patch.object(
+        dns.resolver.Resolver, "resolve", _make_resolve(exception=dns.resolver.NXDOMAIN())
+    ), mock.patch(_BASE_DOMAIN, return_value=False):
+        result = check_dmarc("este-dominio-no-existe-12345.com")
+
+    assert result.status == Status.UNKNOWN
+    assert result.severity.value == "unknown"
+    assert result.checked is False
+    assert result.technical_reason == "dns_resolution_error"
+    assert result.details["error"] == "dns_resolution_error"
+
+
+def test_dmarc_nxdomain_con_dominio_base_indeterminado_no_es_missing_dmarc():
+    # `_base_domain_resolvable` devuelve None: no sabemos si el dominio existe.
+    with mock.patch.object(
+        dns.resolver.Resolver, "resolve", _make_resolve(exception=dns.resolver.NXDOMAIN())
+    ), mock.patch(_BASE_DOMAIN, return_value=None):
+        result = check_dmarc("example.com")
+
+    _assert_fallo_no_es_ausencia(result)  # UNKNOWN, no warning, no missing_dmarc, checked=True
+    assert result.severity.value == "unknown"
+    assert result.technical_reason == "dns_lookup_error"
+    assert result.details["error"] == "dns_lookup_error"
+
+
+@pytest.mark.parametrize(
+    "base_exc",
+    [
+        dns.resolver.Timeout(),
+        dns.resolver.NoNameservers(),
+        dns.exception.DNSException(),
+    ],
+)
+def test_dmarc_nxdomain_y_dominio_base_con_fallo_dns_es_unknown(base_exc):
+    # Sin parchear el helper: las consultas A y AAAA del dominio base fallan sin
+    # respuesta concluyente, así que el helper devuelve None de verdad.
+    def _resolve(self, qname, rdtype):  # noqa: ANN001
+        if str(qname).startswith("_dmarc."):
+            raise dns.resolver.NXDOMAIN()
+        raise base_exc
+
+    with mock.patch.object(dns.resolver.Resolver, "resolve", _resolve):
+        result = check_dmarc("example.com")
+
+    _assert_fallo_no_es_ausencia(result)
+    assert result.technical_reason == "dns_lookup_error"
+    assert result.details["error"] == "dns_lookup_error"
+
+
+@pytest.mark.parametrize("exc", [RuntimeError("bug"), AttributeError("bug"), TypeError("bug")])
+def test_dmarc_error_inesperado_al_comprobar_dominio_base_es_error_interno(exc, caplog):
+    # Un bug en `_base_domain_resolvable` NO debe escapar de `check_dmarc` ni
+    # disfrazarse de error DNS ni de DMARC ausente.
+    with caplog.at_level(logging.ERROR, logger="backend.checks.dmarc"), mock.patch.object(
+        dns.resolver.Resolver, "resolve", _make_resolve(exception=dns.resolver.NXDOMAIN())
+    ), mock.patch(_BASE_DOMAIN, side_effect=exc):
+        result = check_dmarc("example.com")
+
+    _assert_error_interno(result, caplog, type(exc))
+    assert result.status != Status.WARNING
+    assert result.technical_reason != "missing_dmarc"
+
+
+# ---------------------------------------------------------------------------
+# Configuración del resolver: timeout por intento (2 s) < lifetime total (5 s)
+# ---------------------------------------------------------------------------
+def test_dmarc_configura_el_resolver_con_timeout_2_y_lifetime_5():
+    seen = {}
+
+    def _resolve(self, qname, rdtype):  # noqa: ANN001
+        seen["timeout"] = self.timeout
+        seen["lifetime"] = self.lifetime
+        return [_FakeRdata("v=DMARC1; p=reject")]
+
+    with mock.patch.object(dns.resolver.Resolver, "resolve", _resolve):
+        result = check_dmarc("example.com")
+
+    # La consulta termina correctamente con el resolver configurado.
+    assert result.status == Status.OK
+    assert result.details["policy"] == "reject"
+    assert seen == {"timeout": 2.0, "lifetime": 5.0}
+    # Si timeout >= lifetime, un nameserver caído agota el plazo sin failover.
+    assert seen["timeout"] < seen["lifetime"]
 
 
 # ---------------------------------------------------------------------------
