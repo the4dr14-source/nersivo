@@ -24,7 +24,7 @@ from .guides.routes import router as guides_router
 from .monitoring.routes import router as monitoring_router
 from .domain_utils import validate_and_normalize_domain
 from .models import AnalyzeResponse
-from .rate_limit import AnalyzeRateLimitMiddleware
+from .rate_limit import AnalyzeRateLimitMiddleware, validate_environment
 
 app = FastAPI(
     title="Nersivo API",
@@ -39,6 +39,9 @@ app = FastAPI(
 # navegador no podría leer el 429 y lo mostraría como un error de red).
 
 # Rate limiting en memoria (30 peticiones / 60 s por IP, solo en /analyze/).
+# Starlette construye los middlewares en la primera petición, no al arrancar:
+# se valida la configuración aquí para que un error impida desplegar (A3).
+validate_environment()
 app.add_middleware(AnalyzeRateLimitMiddleware)
 
 # CORS: lista explícita de orígenes (sin comodines). No se exponen cookies ni
