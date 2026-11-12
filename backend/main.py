@@ -10,8 +10,8 @@ Los routers de guías (`/guides`) y monitorización (`/monitor`,
 `/internal/monitor/run`) se incluyen al final de este archivo.
 
 CORS está restringido a los orígenes oficiales de Nersivo y a los entornos
-locales de desarrollo. El endpoint de análisis está protegido por un rate
-limiter en memoria (`AnalyzeRateLimitMiddleware`).
+locales de desarrollo. `/analyze/` y `POST /monitor` están protegidos por rate
+limiters en memoria independientes (`AnalyzeRateLimitMiddleware`).
 """
 
 from datetime import datetime
@@ -21,6 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .analyzer import analyze_domain
 from .guides.routes import router as guides_router
+from .monitoring.config import validate_monitor_environment
 from .monitoring.routes import router as monitoring_router
 from .domain_utils import validate_and_normalize_domain
 from .models import AnalyzeResponse
@@ -38,10 +39,14 @@ app = FastAPI(
 # limitador y las respuestas 429 también llevan cabeceras CORS (si no, el
 # navegador no podría leer el 429 y lo mostraría como un error de red).
 
-# Rate limiting en memoria (30 peticiones / 60 s por IP, solo en /analyze/).
+# Rate limiting en memoria: /analyze/ (30 peticiones / 60 s por IP) y
+# POST /monitor (5 / 600 s por IP por defecto, ver rate_limit.py).
 # Starlette construye los middlewares en la primera petición, no al arrancar:
-# se valida la configuración aquí para que un error impida desplegar (A3).
+# se valida la configuración aquí para que un error impida desplegar (A3, A2).
 validate_environment()
+# Igual para los ajustes estrictos de monitorización: `MonitorSettings.from_env()`
+# solo se llama en la primera petición a /monitor, donde un error sería un 503.
+validate_monitor_environment()
 app.add_middleware(AnalyzeRateLimitMiddleware)
 
 # CORS: lista explícita de orígenes (sin comodines). No se exponen cookies ni
@@ -63,6 +68,9 @@ app.add_middleware(
     allow_credentials=False,
     allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["Content-Type", "X-Monitor-Token"],
+    # Un navegador cross-origin solo puede leer `Retry-After` si se expone
+    # explícitamente. Es la única cabecera de respuesta que se expone.
+    expose_headers=["Retry-After"],
 )
 
 

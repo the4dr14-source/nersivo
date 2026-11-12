@@ -15,6 +15,7 @@ Seguridad:
 
 import hashlib
 import secrets
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -38,13 +39,33 @@ from .repository import (
 
 _RECENT_EVENTS = 20
 
+# Segundos que se sugieren esperar (`Retry-After`) cuando no hay hueco para
+# otra activación simultánea.
+BUSY_RETRY_AFTER_SECONDS = 5
+
+# Cerrojo de proceso de la comprobación final de topes + inserción (R1). Solo se
+# toma alrededor de dos COUNT y un INSERT; nunca durante un análisis de red.
+_COMMIT_LOCK = threading.Lock()
+
 
 class MonitorLimitError(Exception):
-    """Se alcanzó un límite de monitorización (global o por dominio)."""
+    """Se alcanzó un límite de monitorización (global, por dominio o de carga).
 
-    def __init__(self, code: str):
+    `retry_after` (segundos) es opcional: solo lo definen los límites que se
+    liberan solos con el tiempo (p. ej. `MonitorBusyError`).
+    """
+
+    def __init__(self, code: str, retry_after: Optional[int] = None):
         super().__init__(code)
         self.code = code
+        self.retry_after = retry_after
+
+
+class MonitorBusyError(MonitorLimitError):
+    """Ya hay el máximo de activaciones simultáneas en este proceso."""
+
+    def __init__(self) -> None:
+        super().__init__("monitor_busy", BUSY_RETRY_AFTER_SECONDS)
 
 
 @dataclass
@@ -68,7 +89,33 @@ def hash_token(token: str) -> str:
 
 
 class MonitorService:
-    """Casos de uso de la monitorización."""
+    """Casos de uso de la monitorización.
+
+    Concurrencia de `activate` (A2/R1 y R2):
+
+    * R2 - Como máximo `settings.max_concurrent_activations` activaciones a la
+      vez. Se reserva un hueco SIN bloquear al empezar; si no hay, se rechaza
+      con `MonitorBusyError` antes de tocar la base de datos o el analizador.
+      El hueco se libera siempre (`finally`), también si el análisis falla.
+    * R1 - Los topes global y por dominio se comprueban dos veces: al empezar
+      (rápido y sin cerrojo, para no pagar un análisis inútil) y de nuevo, de
+      forma AUTORITATIVA, justo antes de insertar y bajo `_commit_lock`.
+      El cerrojo solo cubre dos `COUNT` y un `INSERT` (operaciones cortas de
+      base de datos); NUNCA se mantiene durante el análisis de red. Además, al
+      haber como mucho `max_concurrent_activations` activaciones en curso,
+      como mucho ese número de hilos puede esperar el cerrojo.
+
+    Limitación: `_commit_lock` es un cerrojo de PROCESO compartido por todas las
+    instancias de `MonitorService` (A2.1), de modo que los topes global y por
+    dominio se respetan aunque convivan varias instancias en el mismo proceso.
+    El contador de activaciones (R2), en cambio, es POR INSTANCIA: `get_service()`
+    solo construye una (comprobado en test_monitor_service_lifecycle.py) y solo
+    `reset_service()` (uso exclusivo de tests) puede dejar dos vivas.
+    Ninguna de las dos garantías cruza procesos: la de los topes vale con UNA sola
+    instancia del backend (el despliegue actual en Render Free). Con varios
+    procesos haría falta imponer los topes en la base de datos (bloqueo
+    consultivo o restricción), porque dos procesos no se ven entre sí.
+    """
 
     def __init__(
         self,
@@ -85,6 +132,39 @@ class MonitorService:
         self.notifier: Notifier = notifier or NullNotifier()
         self._clock = clock
         self._monotonic = monotonic
+        # R1: cerrojo de la comprobación final + inserción (nunca durante el análisis).
+        # Es el de PROCESO (A2.1), no uno por instancia: `get_service()` mantiene una
+        # sola instancia, pero tras `reset_service()` pueden convivir dos con la misma
+        # base de datos y cada una crea su propio repositorio.
+        self._commit_lock = _COMMIT_LOCK
+        # R2: activaciones en curso (contador protegido, no bloqueante).
+        self._activations_lock = threading.Lock()
+        self._activations_in_flight = 0
+
+    @property
+    def activations_in_flight(self) -> int:
+        """Activaciones en curso ahora mismo (observabilidad y tests)."""
+        with self._activations_lock:
+            return self._activations_in_flight
+
+    def _try_begin_activation(self) -> bool:
+        """Reserva un hueco de activación sin bloquear. `False` si no hay."""
+        with self._activations_lock:
+            if self._activations_in_flight >= self.settings.max_concurrent_activations:
+                return False
+            self._activations_in_flight += 1
+            return True
+
+    def _end_activation(self) -> None:
+        with self._activations_lock:
+            self._activations_in_flight -= 1
+
+    def _check_capacity(self, normalized: str) -> None:
+        """Lanza `MonitorLimitError` si se alcanzó el tope global o por dominio."""
+        if self.repo.count_active() >= self.settings.max_active:
+            raise MonitorLimitError("monitor_capacity_reached")
+        if self.repo.count_active_for_domain(normalized) >= self.settings.max_per_domain:
+            raise MonitorLimitError("monitor_domain_limit_reached")
 
     # -- casos de uso -------------------------------------------------------------
     def activate(self, domain: str) -> Tuple[str, Dict[str, Any]]:
@@ -96,36 +176,45 @@ class MonitorService:
 
         Raises:
             ValueError: dominio no válido.
+            MonitorBusyError: demasiadas activaciones simultáneas (R2).
             MonitorLimitError: límite global o por dominio alcanzado.
         """
         normalized = validate_and_normalize_domain(domain)
-        if self.repo.count_active() >= self.settings.max_active:
-            raise MonitorLimitError("monitor_capacity_reached")
-        if self.repo.count_active_for_domain(normalized) >= self.settings.max_per_domain:
-            raise MonitorLimitError("monitor_domain_limit_reached")
 
-        now = self._clock()
-        analysis = self._analyze(normalized)
-        fingerprint = make_fingerprint(analysis)
+        # R2: sin hueco no se toca la BD, ni se analiza, ni se inserta nada.
+        if not self._try_begin_activation():
+            raise MonitorBusyError()
+        try:
+            # Comprobación rápida (sin cerrojo): evita pagar un análisis inútil.
+            self._check_capacity(normalized)
 
-        token = secrets.token_urlsafe(32)
-        record = MonitorRecord(
-            id=str(uuid.uuid4()),
-            token_hash=hash_token(token),
-            domain=normalized,
-            status=STATUS_ACTIVE,
-            created_at=to_iso(now) or "",
-            last_checked_at=to_iso(now),
-            next_check_at=to_iso(now + timedelta(hours=self.settings.interval_hours)) or "",
-            interval_hours=self.settings.interval_hours,
-            current_status=fingerprint.get("global_status"),
-            current_score=fingerprint.get("score"),
-            current_fp=fingerprint,
-            previous_fp=None,
-            baseline_fp=merge_baseline(None, fingerprint),
-            last_changes=[],
-        )
-        self.repo.create_monitor(record)
+            now = self._clock()
+            analysis = self._analyze(normalized)
+            fingerprint = make_fingerprint(analysis)
+
+            token = secrets.token_urlsafe(32)
+            record = MonitorRecord(
+                id=str(uuid.uuid4()),
+                token_hash=hash_token(token),
+                domain=normalized,
+                status=STATUS_ACTIVE,
+                created_at=to_iso(now) or "",
+                last_checked_at=to_iso(now),
+                next_check_at=to_iso(now + timedelta(hours=self.settings.interval_hours)) or "",
+                interval_hours=self.settings.interval_hours,
+                current_status=fingerprint.get("global_status"),
+                current_score=fingerprint.get("score"),
+                current_fp=fingerprint,
+                previous_fp=None,
+                baseline_fp=merge_baseline(None, fingerprint),
+                last_changes=[],
+            )
+            # R1: comprobación autoritativa + inserción como una unidad.
+            with self._commit_lock:
+                self._check_capacity(normalized)
+                self.repo.create_monitor(record)
+        finally:
+            self._end_activation()
         return token, self._view(record)
 
     def status(self, token: str) -> Optional[Dict[str, Any]]:

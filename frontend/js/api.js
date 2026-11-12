@@ -7,11 +7,13 @@ export class ApiError extends Error {
   /**
    * @param {"invalid_domain" | "network" | "timeout" | "server" | "unavailable" | "limit" | "not_found" | "unauthorized"} kind
    * @param {string} [detail] Mensaje/código del backend ("invalid_domain" y "limit").
+   * @param {number | null} [retryAfter] Segundos que indica `Retry-After` en un 429 (o null si no se pudo leer).
    */
-  constructor(kind, detail = "") {
+  constructor(kind, detail = "", retryAfter = null) {
     super(kind);
     this.kind = kind;
     this.detail = detail;
+    this.retryAfter = retryAfter;
   }
 }
 
@@ -63,6 +65,18 @@ export async function analyzeDomain(domain) {
 
 const AUX_TIMEOUT_MS = 20_000;
 
+/**
+ * Segundos de la cabecera `Retry-After` (solo la forma numérica). Devuelve null si falta,
+ * no es un entero positivo o el navegador no la expone (CORS sin `expose_headers`).
+ */
+export function parseRetryAfter(value) {
+  if (typeof value !== "string") return null;
+  const text = value.trim();
+  if (!/^\d{1,6}$/.test(text)) return null;
+  const seconds = Number(text);
+  return seconds > 0 ? seconds : null;
+}
+
 /** Petición JSON genérica para los endpoints auxiliares. Devuelve el cuerpo ya parseado. */
 async function requestJson(path, { method = "GET", body, headers = {} } = {}) {
   const controller = new AbortController();
@@ -94,7 +108,9 @@ async function requestJson(path, { method = "GET", body, headers = {} } = {}) {
   if (response.status === 400) throw new ApiError("invalid_domain", detail);
   if (response.status === 401) throw new ApiError("unauthorized");
   if (response.status === 404) throw new ApiError("not_found");
-  if (response.status === 429) throw new ApiError("limit", detail);
+  if (response.status === 429) {
+    throw new ApiError("limit", detail, parseRetryAfter(response.headers.get("Retry-After")));
+  }
   if (response.status === 503) throw new ApiError("unavailable");
   console.error("[Nersivo] La API respondió con HTTP", response.status);
   throw new ApiError("server");

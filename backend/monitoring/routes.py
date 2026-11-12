@@ -2,6 +2,8 @@
 Endpoints de monitorización.
 
 - `POST   /monitor`               activa la monitorización (gratuita en pruebas).
+                                  Limitada por IP (middleware, `rate_limit.py`) y a
+                                  N activaciones simultáneas (`MonitorService`).
 - `GET    /monitor`               estado (cabecera `X-Monitor-Token`).
 - `DELETE /monitor`               desactiva (cabecera `X-Monitor-Token`).
 - `POST   /internal/monitor/run`  job periódico (cabecera `X-Cron-Token`).
@@ -75,7 +77,10 @@ def activate_monitor(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except MonitorLimitError as exc:
-        raise HTTPException(status_code=429, detail=exc.code) from exc
+        # Solo los límites que se liberan con el tiempo (`monitor_busy`) llevan
+        # `Retry-After`; los de capacidad y dominio no cambian.
+        headers = {"Retry-After": str(exc.retry_after)} if exc.retry_after else None
+        raise HTTPException(status_code=429, detail=exc.code, headers=headers) from exc
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001

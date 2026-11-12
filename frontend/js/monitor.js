@@ -8,13 +8,28 @@ import { activateMonitor, ApiError, deactivateMonitor, getMonitor } from "./api.
 import { clearToken, loadToken, saveToken } from "./monitor-store.js";
 import { renderMonitor } from "./monitor-view.js";
 
+/** Espera aproximada en lenguaje natural a partir de `Retry-After` (segundos, o null si se desconoce). */
+export function waitHint(seconds) {
+  if (!Number.isFinite(seconds) || seconds <= 0) return "dentro de unos minutos";
+  if (seconds < 60) return "en unos segundos";
+  const minutes = Math.ceil(seconds / 60);
+  return minutes === 1 ? "en 1 minuto" : `en ${minutes} minutos`;
+}
+
 /** Mensajes comprensibles para cada error de la API. */
 export function monitorErrorMessage(err, action) {
   if (err instanceof ApiError) {
     if (err.kind === "limit") {
-      return err.detail === "monitor_domain_limit_reached"
-        ? "Este dominio ya tiene el máximo de monitorizaciones activas durante la fase de pruebas."
-        : "Ahora mismo no podemos aceptar más monitorizaciones durante la fase de pruebas. Inténtalo más adelante.";
+      if (err.detail === "monitor_domain_limit_reached") {
+        return "Este dominio ya tiene el máximo de monitorizaciones activas durante la fase de pruebas.";
+      }
+      if (err.detail === "monitor_rate_limited") {
+        return `Has intentado activar la monitorización demasiadas veces seguidas. Vuelve a intentarlo ${waitHint(err.retryAfter)}.`;
+      }
+      if (err.detail === "monitor_busy") {
+        return "Ahora mismo hay muchas comprobaciones en marcha. Inténtalo de nuevo en unos segundos.";
+      }
+      return "Ahora mismo no podemos aceptar más monitorizaciones durante la fase de pruebas. Inténtalo más adelante.";
     }
     if (err.kind === "unavailable") return "La monitorización no está disponible en este momento. Inténtalo de nuevo en unos minutos.";
     if (err.kind === "invalid_domain") return "No podemos monitorizar este dominio.";
