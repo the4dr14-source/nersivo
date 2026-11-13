@@ -36,9 +36,25 @@ por el proxy de Render; se avisa al arrancar.
 Con ``NERSIVO_TRUSTED_PROXY_CIDRS`` definido (lista de redes de los proxies,
 obtenida del diagnóstico) la cabecera solo se lee si la conexión TCP procede de
 esas redes; si no, se ignora y la petición cae en ``UNTRUSTED_PEER_KEY``. Eso
-solo es válido si Uvicorn NO reescribe el cliente (``--no-proxy-headers`` o
-``FORWARDED_ALLOW_IPS`` sin comodín); la combinación con ``*`` impide arrancar,
-porque con ella TODOS los usuarios legítimos compartirían un cubo.
+solo es válido si Uvicorn NO reescribe ``scope["client"]``. Uvicorn lo
+reescribe (con la primera entrada NO confiable de la cadena, es decir, la IP del
+cliente final) siempre que el peer TCP esté en ``FORWARDED_ALLOW_IPS``; entonces
+el peer comprobado aquí sería el del usuario y no el del proxy, y TODOS los
+usuarios legítimos caerían en ``UNTRUSTED_PEER_KEY``. Por eso:
+
+* ``--no-proxy-headers``: válido (no se puede detectar desde la aplicación).
+* ``FORWARDED_ALLOW_IPS`` con ``*``: impide arrancar.
+* ``FORWARDED_ALLOW_IPS`` con alguna entrada que SOLAPE con las redes de
+  confianza: impide arrancar (comprobado con Uvicorn real; ver tests).
+* ``FORWARDED_ALLOW_IPS`` sin solape con esas redes: válido.
+
+Agregación IPv6
+---------------
+Un cliente IPv6 suele controlar un /64 entero (2**64 direcciones). Si la clave
+fuera la dirección completa, rotar la parte baja le daría cuota ilimitada y
+llenaría la tabla del limitador. Por eso la clave de una dirección IPv6 es su
+prefijo /64 (``IPV6_RATE_LIMIT_PREFIX``). Coste: usuarios distintos dentro del
+mismo /64 (poco habitual) comparten cuota. IPv4 no se agrega.
 
 Nunca se leen ``X-Real-IP``, ``Forwarded``, ``CF-Connecting-IP`` ni
 ``True-Client-IP``: no se ha demostrado quién las establece ni que un cliente
@@ -71,6 +87,9 @@ UNTRUSTED_CHAIN_KEY = "untrusted-proxy-chain"
 UNTRUSTED_PEER_KEY = "untrusted-peer"
 
 _MAX_ADDRESS_TEXT = 64
+
+# Prefijo con el que se agrupan las direcciones IPv6 en el limitador.
+IPV6_RATE_LIMIT_PREFIX = 64
 
 
 class ClientIdentity(NamedTuple):
@@ -190,10 +209,22 @@ def _valid_port(port: str) -> bool:
     return port.isascii() and port.isdigit() and 0 <= int(port) <= 65535
 
 
+def rate_limit_key(ip: str) -> str:
+    """Clave del limitador para una IP ya normalizada (``normalize_ip``).
+
+    IPv4: la propia dirección. IPv6: su prefijo ``/64`` (ver «Agregación IPv6»).
+    """
+    address = ipaddress.ip_address(ip)
+    if address.version == 6:
+        return str(ipaddress.ip_network((address, IPV6_RATE_LIMIT_PREFIX), strict=False))
+    return str(address)
+
+
 def _peer_key(peer_host: Optional[str]) -> str:
     if not peer_host:
         return UNKNOWN_CLIENT_KEY
-    return normalize_ip(peer_host) or peer_host
+    ip = normalize_ip(peer_host)
+    return rate_limit_key(ip) if ip else peer_host
 
 
 def resolve_client(
@@ -227,7 +258,7 @@ def resolve_client(
     ip = normalize_ip(parts[-trusted_hops])
     if ip is None:
         return ClientIdentity(UNTRUSTED_CHAIN_KEY, "fallback", "invalid-entry")
-    return ClientIdentity(ip, "forwarded-for")
+    return ClientIdentity(rate_limit_key(ip), "forwarded-for")
 
 
 def warn_if_proxy_headers_untrusted(
@@ -253,6 +284,26 @@ def _uvicorn_trusts_everyone(env: Mapping[str, str]) -> bool:
     return "*" in [item.strip() for item in allowed.split(",")]
 
 
+def _allow_list_overlaps(env: Mapping[str, str], networks: Sequence) -> list:
+    """Entradas de ``FORWARDED_ALLOW_IPS`` que solapan con las redes de confianza.
+
+    Las entradas que no son IP ni red (literales, sockets Unix) se ignoran, igual
+    que hace Uvicorn al compararlas con direcciones.
+    """
+    overlapping = []
+    for item in env.get("FORWARDED_ALLOW_IPS", "").split(","):
+        text = item.strip()
+        if not text:
+            continue
+        try:
+            net = ipaddress.ip_network(text, strict=False)
+        except ValueError:
+            continue
+        if any(net.version == t.version and net.overlaps(t) for t in networks):
+            overlapping.append(text)
+    return overlapping
+
+
 def check_peer_verification_config(
     trusted_hops: int,
     trusted_networks: Optional[Sequence],
@@ -264,6 +315,9 @@ def check_peer_verification_config(
     * Redes definidas con ``FORWARDED_ALLOW_IPS=*``: error de arranque. Uvicorn
       reescribe ``scope["client"]`` y el chequeo de peer metería a todos los
       usuarios legítimos en un único cubo.
+    * Redes definidas con ``FORWARDED_ALLOW_IPS`` que SOLAPA con ellas: error de
+      arranque, por la misma razón (Uvicorn reescribe el cliente cuando el peer
+      TCP está en esa lista). Solo se ve la variable de entorno, no los flags.
     * Saltos >= 1 sin redes: aviso de que la cadena no está verificada.
     """
     env = os.environ if environ is None else environ
@@ -274,6 +328,16 @@ def check_peer_verification_config(
                 "Uvicorn reescribe la dirección del cliente y no se puede "
                 "comprobar el peer TCP. Arranca con --no-proxy-headers o "
                 "define FORWARDED_ALLOW_IPS sin comodín."
+            )
+        overlapping = _allow_list_overlaps(env, trusted_networks)
+        if overlapping:
+            raise ValueError(
+                f"{TRUSTED_CIDRS_ENV} solapa con FORWARDED_ALLOW_IPS "
+                f"({', '.join(overlapping)}): Uvicorn reescribiría la dirección "
+                "del cliente con la IP del usuario final y el chequeo de peer "
+                "metería a todos los usuarios legítimos en un único cubo. "
+                "Quita esas redes de FORWARDED_ALLOW_IPS o arranca con "
+                "--no-proxy-headers."
             )
     elif warn and trusted_networks is None and trusted_hops > 0:
         logger.warning(

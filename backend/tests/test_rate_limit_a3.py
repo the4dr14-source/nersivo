@@ -195,7 +195,7 @@ def test_formas_textuales_distintas_de_la_misma_ipv6_comparten_cubo():
     c = TestClient(no_proxy_headers(app), client=PROXY)
     forms = ["2001:DB8::1", "2001:db8:0:0:0:0:0:1", "[2001:db8::1]:443", "2001:db8::0:1"]
     assert burst(c, [xff("1.1.1.1", f) for f in forms]) == [200, 200, 200, 429]
-    assert list(limiter_keys(app)) == ["2001:db8::1"]
+    assert list(limiter_keys(app)) == ["2001:db8::/64"]  # IPv6 se agrega por /64
 
 
 # ------------------------------------------- 0 saltos con Uvicorn sin comodín

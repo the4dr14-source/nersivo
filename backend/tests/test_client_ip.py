@@ -149,7 +149,7 @@ def test_hops_1_ipv6_en_distintas_formas_textuales_comparte_cubo():
     a = resolve_client("10.0.0.5", ["1.1.1.1, 2001:DB8::1"], 1).key
     b = resolve_client("10.0.0.5", ["1.1.1.1, 2001:db8:0:0:0:0:0:1"], 1).key
     c = resolve_client("10.0.0.5", ["1.1.1.1, [2001:db8::1]:443"], 1).key
-    assert a == b == c == "2001:db8::1"
+    assert a == b == c == "2001:db8::/64"  # IPv6 se agrega por /64 (A3 cierre)
 
 
 # ------------------------------------------------ modo 2: dos saltos
